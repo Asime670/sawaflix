@@ -2,6 +2,13 @@ import { NextResponse } from 'next/server'
 import { createClient } from './utils/supabase/middleware'
 
 export async function middleware(request) {
+  // Ensure Supabase env vars are present. If not, skip auth checks to avoid
+  // crashing the middleware during development.
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+    console.error('Supabase env vars missing: skipping middleware auth checks')
+    return NextResponse.next()
+  }
+
   const { supabase, response } = createClient(request)
   
   try {
