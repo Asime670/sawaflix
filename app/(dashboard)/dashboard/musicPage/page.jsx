@@ -1,11 +1,7 @@
-'use client';
-import dynamic from 'next/dynamic';
-
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+"use client";
+import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import {
-  Search,
   Heart,
-  MoreHorizontal,
   Play,
   Pause,
   SkipBack,
@@ -13,413 +9,318 @@ import {
   Repeat,
   Shuffle,
   Volume2,
-  Maximize2,
-  ListMusic
-} from 'lucide-react';
-import Image from 'next/image';
-import Data from '../../../../Data.json';
+  List,
+  Maximize2
+} from "lucide-react";
 
-// Pool of images to rotate through since Data.json doesn't strictly provide song covers
-const COVER_IMAGES = [
-  '/img1.jpg',
-  '/img2.jpg',
-  '/img3.jpg',
-  '/img4.jpg',
-  '/mfy1.jpg',
-  '/music.jpg',
-  '/Teni1.jpg',
-  '/Magasco.jpg',
-  '/CeCe Winans.jpeg',
-  '/music4.jpg'
-];
-
-const ReactPlayer = dynamic(() => import('react-player'), { ssr: false });
+import Data from "../../../../Data.json";
 
 export default function MusicPage() {
-  const [activeCategory, setActiveCategory] = useState('All');
+  const [activeCategory, setActiveCategory] = useState("All");
+  const [searchQuery, setSearchQuery] = useState("");
+
+  // AUDIO STATE
+  const [currentSong, setCurrentSong] = useState({
+    title: "Select a song",
+    url: "",
+    artist: "",
+    cover: ""
+  });
+  const [activeSongTitle, setActiveSongTitle] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isLiked, setIsLiked] = useState(false);
   const [volume, setVolume] = useState(0.7);
-  const [isLiked, setIsLiked] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [visibleSongsCount, setVisibleSongsCount] = useState(10);
+  const [queue, setQueue] = useState([]);
+  const [currentIndex, setCurrentIndex] = useState(-1);
+  const [isShuffled, setIsShuffled] = useState(false);
+  const [repeatMode, setRepeatMode] = useState("off");
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [player, setPlayer] = useState(null);
 
-  const [allSongs, setAllSongs] = useState([]);
-  const [categories, setCategories] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
-
-  // Simulate data fetching with useEffect
+  // YOUTUBE API
   useEffect(() => {
-    setIsLoading(true);
-    // Simulate API delay
-    const timer = setTimeout(() => {
-      // 1. Process Songs
-      let songIdCounter = 1;
-      const processedSongs = Data.music_artists.flatMap((artist, artistIndex) => {
-        const primaryGenre = artist.genre && artist.genre.length > 0 ? artist.genre[0] : 'Unknown';
-        return artist.songs.map((song, songIndex) => {
-          const imageIndex = (artistIndex + songIndex) % COVER_IMAGES.length;
-          return {
-            id: songIdCounter++,
-            title: song.title,
-            artist: artist.name,
-            category: primaryGenre,
-            cover: COVER_IMAGES[imageIndex],
-            url: song.url,
-            duration: '3:45',
-          };
-        });
-      });
-      setAllSongs(processedSongs);
-
-      // 2. Process Categories
-      const normalizeGenre = (genre) => {
-        const g = genre.toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (g === 'afropop' || g === 'afropops') return 'Afropop';
-        if (g === 'afrobeat' || g === 'afrobeats') return 'Afrobeats';
-        if (g === 'hiphop') return 'Hip-Hop';
-        if (g === 'afrofusion') return 'Afro-Fusion';
-        if (g === 'makosa' || g === 'makossa') return 'Makossa';
-        return genre.charAt(0).toUpperCase() + genre.slice(1);
-      };
-
-      const genres = new Set();
-      Data.music_artists.forEach(artist => {
-        artist.genre.forEach(g => genres.add(normalizeGenre(g)));
-      });
-
-      let genreList = Array.from(genres);
-      const makossaIndex = genreList.indexOf('Makossa');
-      if (makossaIndex > -1) {
-        genreList.splice(makossaIndex, 1);
-        genreList = ['Makossa', ...genreList];
-      }
-      setCategories(['All', ...genreList]);
-
-      setIsLoading(false);
-    }, 500); // 500ms delay to show loading state
-
-    return () => clearTimeout(timer);
+    if (window.YT) return;
+    const tag = document.createElement("script");
+    tag.src = "https://www.youtube.com/iframe_api";
+    const firstScriptTag = document.getElementsByTagName("script")[0];
+    firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
   }, []);
 
-  // Filter songs based on category and search query
-  const filteredSongs = useMemo(() => {
-    return allSongs.filter(song => {
-      const normalizeGenre = (genre) => {
-        const g = genre.toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (g === 'afropop' || g === 'afropops') return 'Afropop';
-        if (g === 'afrobeat' || g === 'afrobeats') return 'Afrobeats';
-        if (g === 'hiphop') return 'Hip-Hop';
-        if (g === 'afrofusion') return 'Afro-Fusion';
-        if (g === 'makosa' || g === 'makossa') return 'Makossa';
-        return genre.charAt(0).toUpperCase() + genre.slice(1);
+  // CATEGORIES
+  const categories = useMemo(() => {
+    const all = new Set(["All"]);
+    Data?.music_artists?.forEach((a) => a.genre?.forEach((g) => all.add(g)));
+    return Array.from(all);
+  }, []);
+
+  // FILTERED CONTENT
+  const displayedContent = useMemo(() => {
+    return Data.music_artists
+      .map((artist) => {
+        const matchCat =
+          activeCategory === "All" ||
+          artist.genre.some((g) =>
+            g.toLowerCase().includes(activeCategory.toLowerCase())
+          );
+
+        if (!matchCat) return null;
+
+        const songs = artist.songs.filter(
+          (s) =>
+            artist.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            s.title.toLowerCase().includes(searchQuery.toLowerCase())
+        );
+
+        if (songs.length === 0) return null;
+
+        return { ...artist, songs };
+      })
+      .filter(Boolean);
+  }, [activeCategory, searchQuery]);
+
+  // HELPER
+  const getYouTubeId = (url) => {
+    if (!url) return "";
+    try {
+      if (url.includes("youtu.be")) return url.split("youtu.be/")[1].split("?")[0];
+      if (url.includes("v=")) return url.split("v=")[1].split("&")[0];
+      return "";
+    } catch {
+      return "";
+    }
+  };
+  const cleanUrl = (url) => {
+    const id = getYouTubeId(url);
+    return id ? `https://www.youtube.com/embed/${id}` : url;
+  };
+
+  const initPlayer = (videoId) => {
+    if (!window.YT || !window.YT.Player) {
+      setTimeout(() => initPlayer(videoId), 100);
+      return;
+    }
+
+    if (player) {
+      player.loadVideoById(videoId);
+      player.playVideo();
+      return;
+    }
+
+    const newPlayer = new window.YT.Player("youtube-player", {
+      height: "0",
+      width: "0",
+      videoId,
+      playerVars: { autoplay: 1, controls: 0 },
+      events: {
+        onReady: (event) => {
+          setPlayer(event.target);
+          event.target.setVolume(volume * 100);
+          event.target.playVideo();
+        },
+        onStateChange: (event) => {
+          if (event.data === window.YT.PlayerState.PLAYING) {
+            setIsPlaying(true);
+            setDuration(event.target.getDuration());
+          } else if (event.data === window.YT.PlayerState.PAUSED) {
+            setIsPlaying(false);
+          } else if (event.data === window.YT.PlayerState.ENDED) {
+            handleNext();
+          }
+        }
       }
-
-      const songCategory = normalizeGenre(song.category);
-      const matchesCategory = activeCategory === 'All' || songCategory === activeCategory;
-      const matchesSearch = song.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        song.artist.toLowerCase().includes(searchQuery.toLowerCase());
-      return matchesCategory && matchesSearch;
     });
-  }, [activeCategory, searchQuery, allSongs]);
+  };
 
-  const displayedSongs = useMemo(() => {
-    return filteredSongs.slice(0, visibleSongsCount);
-  }, [filteredSongs, visibleSongsCount]);
-
-  // Placeholder state for no song selected
-  const [currentSong, setCurrentSong] = useState({
-    title: 'Select a song',
-    artist: 'Artist',
-    cover: '/img1.jpg',
-    duration: '--:--',
-    currentTime: '0:00',
-    url: ''
-  });
-
-  // Update currentSong when allSongs is populated for the first time
+  // PROGRESS UPDATE
   useEffect(() => {
-    if (allSongs.length > 0 && currentSong.title === 'Select a song') {
-      setCurrentSong({
-        ...allSongs[0],
-        currentTime: '0:00'
-      });
+    if (!player || !isPlaying) return;
+    const interval = setInterval(() => {
+      if (player.getCurrentTime) setCurrentTime(player.getCurrentTime());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [player, isPlaying]);
+
+  useEffect(() => {
+    if (player && player.setVolume) player.setVolume(volume * 100);
+  }, [volume, player]);
+
+  // QUEUE
+  const generateQueue = useCallback(() => {
+    const q = [];
+    displayedContent.forEach((artist) =>
+      artist.songs.forEach((song) => q.push({ ...song, artist: artist.name, cover: song.cover || "" }))
+    );
+    return q;
+  }, [displayedContent]);
+
+  useEffect(() => setQueue(generateQueue()), [generateQueue]);
+
+  const handlePlaySong = (song, artistName, coverImage, indexInQueue) => {
+    const videoId = getYouTubeId(song.url);
+    if (activeSongTitle === song.title) {
+      if (player) isPlaying ? player.pauseVideo() : player.playVideo();
+      return;
     }
-  }, [allSongs]);
-
-  const [progress, setProgress] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const playerRef = useRef(null);
-  const [isReady, setIsReady] = useState(false);
-
-  // Format time helper
-  const formatTime = (time) => {
-    if (isNaN(time)) return '0:00';
-    const minutes = Math.floor(time / 60);
-    const seconds = Math.floor(time % 60);
-    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    setCurrentSong({ title: song.title, url: cleanUrl(song.url), artist: artistName, cover: coverImage });
+    setActiveSongTitle(song.title);
+    setCurrentIndex(indexInQueue);
+    setCurrentTime(0);
+    initPlayer(videoId);
   };
 
-  const handlePlaySong = (song) => {
-    if (currentSong.id === song.id) {
-      // Toggle play/pause if same song
-      setIsPlaying(!isPlaying);
+  const playAtIndex = (index) => {
+    if (!queue.length || index < 0 || index >= queue.length) return;
+    const song = queue[index];
+    handlePlaySong(song, song.artist, song.cover, index);
+  };
+
+  const handleNext = () => {
+    if (!queue.length) return;
+    if (repeatMode === "one" && player) {
+      player.seekTo(0);
+      player.playVideo();
+      return;
+    }
+    if (isShuffled) {
+      const randomIndex = Math.floor(Math.random() * queue.length);
+      playAtIndex(randomIndex);
     } else {
-      // New song
-      setCurrentSong(song);
-      setIsPlaying(true);
-      setProgress(0);
-      setIsReady(false);
+      let nextIndex = currentIndex + 1;
+      if (nextIndex >= queue.length) {
+        if (repeatMode === "all") nextIndex = 0;
+        else return setIsPlaying(false);
+      }
+      playAtIndex(nextIndex);
     }
   };
 
-  // No need for manual audio Ref effects as ReactPlayer handles props
-
-  const handleProgress = ({ playedSeconds }) => {
-    // Only update progress if we're not seeking (optional optimization, but simple set is fine)
-    setProgress(playedSeconds);
+  const handlePrev = () => {
+    if (!queue.length) return;
+    let prevIndex = currentIndex - 1;
+    if (prevIndex < 0) prevIndex = queue.length - 1;
+    playAtIndex(prevIndex);
   };
 
-  const handleDuration = (duration) => {
-    setDuration(duration);
+  const toggleShuffle = () => setIsShuffled(!isShuffled);
+  const toggleRepeat = () => {
+    const modes = ["off", "all", "one"];
+    setRepeatMode(modes[(modes.indexOf(repeatMode) + 1) % 3]);
   };
-
-  const handleEnded = () => {
-    setIsPlaying(false);
-    setProgress(0);
-  };
+  const togglePlayPause = () => { if (player) isPlaying ? player.pauseVideo() : player.playVideo(); };
+  const formatTime = (s) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, "0")}`;
 
   return (
-    <div className="flex flex-col h-[calc(100vh-2rem)] bg-gray-900 text-white rounded-3xl overflow-hidden relative font-sans">
+    <div className="flex flex-col h-screen w-full bg-[#1a2332] text-white overflow-hidden">
 
-      {/* Top Bar with Search */}
-      <div className="p-6 pb-2 flex justify-end items-center z-10">
-        <div className="relative w-72">
-          <input
-            type="text"
-            placeholder="Search songs, artists..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-slate-800/80 text-sm text-gray-300 rounded-full py-2.5 pl-4 pr-10 focus:outline-none focus:ring-2 focus:ring-red-600/50 placeholder-gray-500"
-          />
-          <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-        </div>
+      {/* Hidden YT Player */}
+      <div id="youtube-player" style={{ display: 'none' }}></div>
+
+      {/* Categories */}
+      <div className="px-6 pt-6 pb-4 flex gap-3 overflow-x-auto scrollbar-hide">
+        {categories.map(c => (
+          <button key={c} onClick={() => setActiveCategory(c)}
+            className={`px-5 py-2 rounded-full text-sm font-medium whitespace-nowrap ${activeCategory === c ? "bg-red-600 text-white" : "bg-[#2a3544] text-gray-300"}`}>{c}</button>
+        ))}
       </div>
 
-      {/* Main Content Area */}
-      <div className="flex-1 overflow-y-auto px-8 pb-32 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
-
-        {isLoading ? (
-          <div className="flex flex-col items-center justify-center h-64 text-gray-400">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600 mb-4"></div>
-            <p>Loading your music...</p>
-          </div>
-        ) : (
-          <>
-            {/* Categories */}
-            <div className="flex space-x-4 mb-8 overflow-x-auto pb-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']">
-              {categories.map((category) => (
-                <button
-                  key={category}
-                  onClick={() => setActiveCategory(category)}
-                  className={`px-6 py-2 rounded-lg text-sm font-semibold transition-all duration-200 whitespace-nowrap ${activeCategory === category
-                    ? 'bg-red-600 text-white shadow-lg shadow-red-600/20'
-                    : 'bg-slate-800/50 text-gray-400 hover:bg-slate-700 hover:text-white'
-                    }`}
-                >
-                  {category}
-                </button>
-              ))}
-            </div>
-
-            {/* Songs Grid */}
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-              {displayedSongs.length > 0 ? (
-                displayedSongs.map((song) => (
-                  <div
-                    key={song.id}
-                    onClick={() => handlePlaySong(song)}
-                    className={`p-4 rounded-2xl group transition-all duration-300 cursor-pointer hover:-translate-y-1 ${currentSong.id === song.id && isPlaying
-                      ? 'bg-slate-700/80 border border-red-500/50 shadow-lg shadow-red-500/10'
-                      : 'bg-slate-800/40 hover:bg-slate-800/80'
-                      }`}
-                  >
-                    <div className="relative aspect-square mb-4 rounded-xl overflow-hidden shadow-lg">
-                      <Image
-                        src={song.cover}
-                        alt={song.title}
-                        fill
-                        className="object-cover transition-transform duration-500 group-hover:scale-110"
-                      />
-                      <div className={`absolute inset-0 bg-black/40 transition-opacity duration-300 flex items-center justify-center backdrop-blur-[2px] ${currentSong.id === song.id && isPlaying ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                        }`}>
-                        <button className="bg-red-600 text-white p-3 rounded-full transform transition-transform duration-300 hover:bg-red-700 shadow-xl">
-                          {currentSong.id === song.id && isPlaying ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current" />}
-                        </button>
+      {/* Songs Content */}
+      <div className="flex-1 px-6 overflow-y-auto scrollbar-hide">
+        {displayedContent.map((artist, aIdx) => (
+          <div key={aIdx} className="mb-10">
+            <h2 className="text-3xl font-bold mb-2">{artist.name}</h2>
+            <div className="flex gap-2 mb-4">{artist.genre.map((g, i) => <span key={i} className="px-3 py-1 bg-[#2a3544] text-xs rounded text-gray-300">{g}</span>)}</div>
+            {artist.biography && <p className="text-sm text-gray-400 mb-4">{artist.biography}</p>}
+            <div className="flex gap-4 overflow-x-auto scrollbar-hide pb-4">
+              {artist.songs.map((song, sIdx) => {
+                const cover = song.cover || "";
+                const isActive = activeSongTitle === song.title;
+                const globalIndex = queue.findIndex(q => q.title === song.title && q.artist === artist.name);
+                return (
+                  <div key={sIdx} className="flex-shrink-0 w-40 cursor-pointer" onClick={() => handlePlaySong(song, artist.name, cover, globalIndex)}>
+                    <div className="bg-[#2a3544] rounded-2xl overflow-hidden">
+                      <div className="relative aspect-square p-2">
+                        <img src={cover} alt={song.title} className="w-full h-full object-cover rounded-xl" />
+                        {isActive && (
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <div className="w-16 h-16 rounded-full bg-red-600 flex items-center justify-center">
+                              {isPlaying ? <Pause className="w-8 h-8 text-white" /> : <Play className="w-8 h-8 text-white" />}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      <div className="px-3 pb-2">
+                        <h3 className="font-semibold text-sm truncate mb-1">{song.title}</h3>
+                        <p className="text-xs text-gray-400 truncate">{artist.name}</p>
                       </div>
                     </div>
-                    <h3 className="font-bold text-gray-100 truncate mb-1">{song.title}</h3>
-                    <p className="text-sm text-gray-400 truncate">{song.artist}</p>
-
-                    {/* Category tag - visual indicator based on category hashing */}
-                    <div className={`h-1 w-full mt-3 rounded-full ${song.category === 'Makossa' || song.category === 'Makosa' ? 'bg-red-500' :
-                      song.category === 'Bikusi' ? 'bg-blue-500' :
-                        song.category === 'Afro-Fusion' || song.category === 'Afropop' ? 'bg-purple-500' :
-                          song.category === 'Hip-Hop' || song.category === 'Hip-hop' ? 'bg-orange-500' : 'bg-green-500'
-                      }`}></div>
                   </div>
-                ))
-              ) : (
-                <div className="col-span-full text-center text-gray-500 py-12">
-                  <p>No songs found matching your criteria.</p>
-                </div>
-              )}
+                );
+              })}
             </div>
+          </div>
+        ))}
+      </div>
 
-            {/* Load More Button */}
-            {visibleSongsCount < filteredSongs.length && (
-              <div className="mt-12 mb-8 flex justify-center">
-                <button
-                  onClick={() => setVisibleSongsCount(prev => prev + 10)}
-                  className="flex items-center space-x-2 bg-red-600 hover:bg-red-700 text-white px-6 py-2.5 rounded-full font-medium transition-colors shadow-lg shadow-red-600/20"
-                >
-                  <span>Load More</span>
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-4 w-4"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
+      {/* CONTROL PANEL ALWAYS AT BOTTOM */}
+      <div className="sticky bottom-0 left-0 right-0 bg-[#0f1824] px-6 py-4 border-t border-gray-800 flex-shrink-0">
+        {/* --- Keep your control panel content exactly as before --- */}
+        {/* Left: Song Info */}
+        <div className="flex items-center justify-between max-w-screen-2xl mx-auto">
+          <div className="flex items-center gap-3 w-72">
+            <div className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 bg-gray-800">
+              <img src={currentSong.cover} alt={currentSong.title} className="w-full h-full object-cover" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h4 className="font-semibold text-sm truncate">{currentSong.title}</h4>
+              <p className="text-xs text-gray-400 truncate">{currentSong.artist}</p>
+            </div>
+            <button onClick={() => setIsLiked(!isLiked)}>
+              <Heart className={`w-5 h-5 ${isLiked ? "fill-pink-500 text-pink-500" : "text-gray-400"}`} />
+            </button>
+          </div>
+
+          {/* Center Controls */}
+          <div className="flex flex-col items-center gap-2">
+            <div className="flex items-center gap-6">
+              <button onClick={toggleShuffle} className={`${isShuffled ? "text-red-500" : "text-gray-400"}`}><Shuffle className="w-5 h-5" /></button>
+              <button onClick={handlePrev} className="text-gray-400"><SkipBack className="w-6 h-6" /></button>
+              <button onClick={togglePlayPause} className="w-12 h-12 rounded-full bg-red-600 flex items-center justify-center">
+                {isPlaying ? <Pause className="w-6 h-6 text-white" /> : <Play className="w-6 h-6 text-white" />}
+              </button>
+              <button onClick={handleNext} className="text-gray-400"><SkipForward className="w-6 h-6" /></button>
+              <button onClick={toggleRepeat} className={`${repeatMode !== "off" ? "text-red-500" : "text-gray-400"}`}><Repeat className="w-5 h-5" /></button>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              <span>{formatTime(currentTime)}</span>
+              <div className="w-48 h-1 bg-gray-700 rounded-full">
+                <div className="h-full bg-white rounded-full" style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }} />
               </div>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* Player Bar */}
-      <div className="absolute bottom-0 left-0 right-0 h-24 bg-[#0a0f1d]/95 backdrop-blur-xl border-t border-gray-800/50 px-8 flex items-center justify-between z-20">
-
-        {/* Track Info */}
-        <div className="flex items-center w-1/4 min-w-[200px]">
-          <div className="w-14 h-14 relative rounded-xl overflow-hidden mr-4 shadow-lg">
-            <div className="bg-gradient-to-br from-green-800 to-black w-full h-full flex items-center justify-center">
-              <Image
-                src={currentSong.cover}
-                alt="Active Art"
-                fill
-                className="object-cover"
-              />
+              <span>{formatTime(duration)}</span>
             </div>
           </div>
-          <div className="flex-1 mr-4 overflow-hidden">
-            <h4 className="font-bold text-white truncate">{currentSong.title}</h4>
-            <p className="text-sm text-gray-400 truncate">{currentSong.artist}</p>
-          </div>
-          <button
-            onClick={() => setIsLiked(!isLiked)}
-            className="text-gray-400 hover:text-red-500 transition-colors"
-          >
-            <Heart className={`w-5 h-5 ${isLiked ? 'text-red-500 fill-current' : ''}`} />
-          </button>
-        </div>
 
-        {/* Player Controls */}
-        <div className="flex flex-col items-center flex-1 max-w-2xl px-8">
-          <div className="flex items-center space-x-6 mb-2">
-            <button className="text-gray-400 hover:text-white transition-colors">
-              <Shuffle className="w-4 h-4" />
-            </button>
-            <button className="text-gray-300 hover:text-white transition-colors">
-              <SkipBack className="w-5 h-5 fill-current" />
-            </button>
-            <button
-              onClick={() => setIsPlaying(!isPlaying)}
-              className="bg-red-600 hover:bg-red-700 text-white p-2.5 rounded-full transition-all shadow-lg shadow-red-600/20 hover:scale-105"
-            >
-              {isPlaying ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current pl-1" />}
-            </button>
-            <button className="text-gray-300 hover:text-white transition-colors">
-              <SkipForward className="w-5 h-5 fill-current" />
-            </button>
-            <button className="text-gray-400 hover:text-white transition-colors">
-              <Repeat className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Progress Bar */}
-          <div className="w-full flex items-center space-x-3 text-xs font-medium text-gray-500">
-            <span>{formatTime(progress)}</span>
-            <div
-              className="flex-1 h-1 bg-gray-700 rounded-full relative cursor-pointer group"
-              onClick={(e) => {
-                const width = e.currentTarget.clientWidth;
-                const clickX = e.nativeEvent.offsetX;
-                const newTime = (clickX / width) * duration; // Calculate safe time?
-                // Avoid potential division by zero if duration is 0
-                if (duration > 0 && playerRef.current) {
-                  playerRef.current.seekTo(newTime);
-                  setProgress(newTime);
-                }
-              }}
-            >
-              <div
-                className="absolute left-0 top-0 h-full bg-red-600 rounded-full group-hover:bg-red-500"
-                style={{ width: `${duration > 0 ? (progress / duration) * 100 : 0}%` }}
-              ></div>
-              <div
-                className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full opacity-0 group-hover:opacity-100 shadow-md"
-                style={{ left: `${duration > 0 ? (progress / duration) * 100 : 0}%` }}
-              ></div>
+          {/* Right Controls */}
+          <div className="flex items-center gap-4 w-72 justify-end">
+            <button className="text-gray-400"><List className="w-5 h-5" /></button>
+            <button className="text-gray-400"><Volume2 className="w-5 h-5" /></button>
+            <div className="w-24 h-1 bg-gray-700 rounded-full cursor-pointer" onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              const newVol = (e.clientX - rect.left) / rect.width;
+              setVolume(Math.min(1, Math.max(0, newVol)));
+            }}>
+              <div className="h-full bg-white rounded-full" style={{ width: `${volume * 100}%` }} />
             </div>
-            <span>{formatTime(duration)}</span>
+            <button className="text-gray-400"><Maximize2 className="w-5 h-5" /></button>
           </div>
-
-          <div className="hidden">
-            <ReactPlayer
-              ref={playerRef}
-              url={currentSong.url}
-              playing={isPlaying}
-              volume={volume}
-              onProgress={handleProgress}
-              onDuration={handleDuration}
-              onEnded={handleEnded}
-              onReady={() => setIsReady(true)}
-              width="0"
-              height="0"
-            />
-          </div>
-        </div>
-
-        {/* Volume & Extras */}
-        <div className="flex items-center justify-end w-1/4 min-w-[200px] space-x-4">
-          <button className="text-gray-400 hover:text-white">
-            <ListMusic className="w-5 h-5" />
-          </button>
-          <div className="flex items-center space-x-2 w-32 group">
-            <Volume2 className="w-5 h-5 text-gray-400 group-hover:text-white transition-colors" />
-            <div
-              className="flex-1 h-1 bg-gray-700 rounded-full relative cursor-pointer"
-              onClick={(e) => {
-                const width = e.currentTarget.clientWidth;
-                const clickX = e.nativeEvent.offsetX;
-                const newVolume = Math.max(0, Math.min(1, clickX / width));
-                setVolume(newVolume);
-              }}
-            >
-              <div
-                className="absolute left-0 top-0 h-full bg-gray-400 group-hover:bg-white rounded-full transition-colors"
-                style={{ width: `${volume * 100}%` }}
-              ></div>
-            </div>
-          </div>
-          <button className="text-gray-400 hover:text-white">
-            <Maximize2 className="w-5 h-5" />
-          </button>
         </div>
       </div>
+
+      <style jsx>{`
+        /* Hide all scrollbars */
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+      `}</style>
     </div>
   );
 }
